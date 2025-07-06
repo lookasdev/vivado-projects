@@ -1,0 +1,549 @@
+module automatLiftMoore(
+    input logic ck,
+    input logic [2:0] etaj_curent, etaj_cerut,
+    input logic reset,
+    input logic [2:0] door_cnt_val, // actualizat pe 3 biți
+    output logic door_cnt_en,
+    output logic sus,
+    output logic jos
+);
+
+localparam STATE_IDLE           = 6'b000001;
+localparam STATE_DOOR_CLOSE     = 6'b000010;
+localparam STATE_CHECK_DIRECTION= 6'b000100;
+localparam STATE_MOVE_UP        = 6'b001000;
+localparam STATE_MOVE_DOWN      = 6'b010000;
+localparam STATE_DOOR_OPEN      = 6'b100000;
+
+logic [5:0] state;
+
+always_ff @(posedge ck) begin
+    if (reset)
+        state <= STATE_IDLE;
+    else case (state)
+        STATE_IDLE:
+            if (etaj_curent != etaj_cerut)
+                state <= STATE_DOOR_CLOSE;
+            else
+                state <= STATE_IDLE;
+
+        STATE_DOOR_CLOSE:
+            if (door_cnt_val == 3)
+                state <= STATE_CHECK_DIRECTION;
+            else
+                state <= STATE_DOOR_CLOSE;
+
+        STATE_CHECK_DIRECTION:
+            if (etaj_curent < etaj_cerut)
+                state <= STATE_MOVE_UP;
+            else if (etaj_curent > etaj_cerut)
+                state <= STATE_MOVE_DOWN;
+            else
+                state <= STATE_DOOR_OPEN;
+
+        STATE_MOVE_UP:
+            if (etaj_curent == etaj_cerut)
+                state <= STATE_DOOR_OPEN;
+            else
+                state <= STATE_MOVE_UP;
+
+        STATE_MOVE_DOWN:
+            if (etaj_curent == etaj_cerut)
+                state <= STATE_DOOR_OPEN;
+            else
+                state <= STATE_MOVE_DOWN;
+
+        STATE_DOOR_OPEN:
+            if (door_cnt_val == 3)
+                state <= STATE_IDLE;
+            else
+                state <= STATE_DOOR_OPEN;
+
+        default:
+            state <= STATE_IDLE;
+    endcase
+end
+
+// Moore output logic — doar după stare!
+always_comb begin
+    door_cnt_en = 0;
+    sus = 0;
+    jos = 0;
+
+    case (state)
+        STATE_IDLE:           door_cnt_en = 0;
+        STATE_DOOR_CLOSE:     door_cnt_en = 1;
+        STATE_DOOR_OPEN:      door_cnt_en = 1;
+        STATE_CHECK_DIRECTION: ; // Nicio ieșire specială
+        STATE_MOVE_UP:        sus = 1;
+        STATE_MOVE_DOWN:      jos = 1;
+        default: ;
+    endcase
+end
+
+endmodule
+
+////////////////////////////////////////////
+
+module bigAdder(
+    output logic [15:0] out,
+    output logic        crOut,   // final carry out
+    input  logic [15:0] in0,
+    input  logic [15:0] in1,
+    input  logic        crIn     // initial carry in
+);
+    // Intermediate carry wires
+    logic c1, c2, c3;
+
+    // Instantiate four 4-bit fullAdders
+    fullAdder FA0(
+        .out(out[3:0]),
+        .crOut(c1),
+        .in0(in0[3:0]),
+        .in1(in1[3:0]),
+        .crIn(crIn)
+    );
+
+    fullAdder FA1(
+        .out(out[7:4]),
+        .crOut(c2),
+        .in0(in0[7:4]),
+        .in1(in1[7:4]),
+        .crIn(c1)
+    );
+
+    fullAdder FA2(
+        .out(out[11:8]),
+        .crOut(c3),
+        .in0(in0[11:8]),
+        .in1(in1[11:8]),
+        .crIn(c2)
+    );
+
+    fullAdder FA3(
+        .out(out[15:12]),
+        .crOut(crOut),
+        .in0(in0[15:12]),
+        .in1(in1[15:12]),
+        .crIn(c3)
+    );
+
+endmodule
+
+module ParallelRegister (
+    input  logic       clk,
+    input  logic [3:0] D,      // Parallel Data In
+    output logic [3:0] Q       // Parallel Data Out
+);
+
+    always_ff @(posedge clk) begin
+        Q <= D;
+    end
+
+endmodule
+
+module SerialInSerialOut (
+    input  logic clk,
+    input  logic SI,        // Serial In
+    output logic SO         // Serial Out
+);
+
+    logic [3:0] Q;
+
+    always_ff @(posedge clk) begin
+        Q <= {Q[2:0], SI};  // Shift spre stânga
+    end
+
+    assign SO = Q[3];       // Ultimul bit iese pe serial out
+
+endmodule
+
+module SerialInParallelOut #(
+    parameter N = 8                    // Width of parallel output
+)(
+    input  logic clk,                  // Clock
+    input  logic reset,                // Asynchronous reset
+    input  logic shift_en,            // Shift enable
+    input  logic SI,                  // Serial input
+    output logic [N-1:0] parallel_out // Parallel output
+);
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset)
+            parallel_out <= '0;
+        else if (shift_en)
+            parallel_out <= {parallel_out[N-2:0], SI};  // Left shift
+    end
+
+endmodule
+
+module Comparator2bit (
+    input  logic [1:0] A,   // A = a1 a0
+    input  logic [1:0] B,   // B = b1 b0
+    output logic A_less_B, 
+    output logic A_greater_B, 
+    output logic A_equal_B
+);
+
+    always_comb begin
+        // Egalitate
+        A_equal_B = (A == B);
+
+        // A < B
+        A_less_B =  (A[1] == B[1]) ? (A[0] < B[0]) : (A[1] < B[1]);
+
+        // A > B
+        A_greater_B = (A[1] == B[1]) ? (A[0] > B[0]) : (A[1] > B[1]);
+    end
+
+endmodule
+
+module SquareDifferenceMod (
+    input  logic [15:0] a,
+    input  logic [15:0] b,
+    output logic [31:0] result  // 32 biți pentru că pătratul unui număr de 16 biți poate avea până la 32 biți
+);
+
+    logic [31:0] square_a;
+    logic [31:0] square_b;
+    logic [31:0] diff;
+
+    always_comb begin
+        square_a = a * a;
+        square_b = b * b;
+        diff     = (square_a > square_b) ? (square_a - square_b) : (square_b - square_a);
+        result   = diff;
+    end
+
+endmodule
+
+// prob5.5
+module phaseGenerator ( 
+    input  logic       clk,
+    input  logic       reset,
+    output logic [2:0] out
+);
+
+    // Definim stările
+    localparam STATE_PHASE1 = 5'b00001;
+    localparam STATE_PHASE2 = 5'b00010;
+    localparam STATE_PHASE3 = 5'b00100;
+    localparam STATE_DONE   = 5'b01000;
+
+    logic [4:0] state;
+    logic [3:0] cnt; // suficient pentru a număra până la 7
+
+    // Tranziții de stare
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state <= STATE_PHASE1;
+            cnt   <= 0;
+        end else begin
+            case (state)
+                STATE_PHASE1: begin
+                    if (cnt == 3 - 1) begin
+                        state <= STATE_PHASE2;
+                        cnt <= 0;
+                    end else
+                        cnt <= cnt + 1;
+                end
+
+                STATE_PHASE2: begin
+                    if (cnt == 2 - 1) begin
+                        state <= STATE_PHASE3;
+                        cnt <= 0;
+                    end else
+                        cnt <= cnt + 1;
+                end
+
+                STATE_PHASE3: begin
+                    if (cnt == 7 - 1) begin
+                        state <= STATE_DONE;
+                        cnt <= 0;
+                    end else
+                        cnt <= cnt + 1;
+                end
+
+                STATE_DONE: begin
+                    cnt <= 0;  // nu mai numărăm în starea finală
+                    state <= STATE_DONE; // stăm aici până la reset
+                end
+
+                default: begin
+                    state <= STATE_DONE;
+                    cnt <= 0;
+                end
+            endcase
+        end
+    end
+
+    // Ieșiri în funcție de stare
+    always_comb begin
+        case (state)
+            STATE_PHASE1: out = 3'b001;
+            STATE_PHASE2: out = 3'b010;
+            STATE_PHASE3: out = 3'b100;
+            STATE_DONE:   out = 3'b000;
+            default:      out = 3'b000;
+        endcase
+    end
+
+endmodule
+
+// prob 4.9
+module sequenceDetectorMealy (
+    input  logic       clk,
+    input  logic       reset,
+    input  logic [1:0] symbol,      // codificat: 00=a, 01=b, 10=c, 11=e
+    output logic       match        // 1 când secvența completă este detectată
+);
+
+    typedef enum logic [3:0] {
+        S_IDLE,
+        S_E1, S_E2,
+        S_A, S_A_LOOP,
+        S_B,
+        S_C, S_C_LOOP,
+        S_E3, S_E4
+    } state_t;
+
+    state_t state;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset)
+            state <= S_IDLE;
+        else begin
+            case (state)
+                S_IDLE:    if (symbol == 2'b11) state <= S_E1;
+                S_E1:      if (symbol == 2'b11) state <= S_E2;
+                           else if (symbol != 2'b11) state <= S_IDLE;
+
+                S_E2:      if (symbol == 2'b00) state <= S_A;
+                           else if (symbol == 2'b11) state <= S_E2;
+                           else state <= S_IDLE;
+
+                S_A:       if (symbol == 2'b00) state <= S_A_LOOP;
+                           else state <= S_IDLE;
+
+                S_A_LOOP:  if (symbol == 2'b00) state <= S_A_LOOP;
+                           else if (symbol == 2'b01) state <= S_B;
+                           else state <= S_IDLE;
+
+                S_B:       if (symbol == 2'b10) state <= S_C;
+                           else state <= S_IDLE;
+
+                S_C:       if (symbol == 2'b10) state <= S_C_LOOP;
+                           else state <= S_IDLE;
+
+                S_C_LOOP:  if (symbol == 2'b10) state <= S_C_LOOP;
+                           else if (symbol == 2'b11) state <= S_E3;
+                           else state <= S_IDLE;
+
+                S_E3:      if (symbol == 2'b11) state <= S_E4;
+                           else state <= S_IDLE;
+
+                S_E4:      state <= S_IDLE;
+
+                default:   state <= S_IDLE;
+            endcase
+        end
+    end
+
+    // Mealy output logic
+    always_comb begin
+        match = 0;
+        if (state == S_E3 && symbol == 2'b11)
+            match = 1;  // valid sequence detected
+    end
+
+endmodule
+
+//prob 5.3
+module SymbolCounter (
+    input logic clk,
+    input logic reset,
+    input logic [1:0] symbol,   // 00=a, 01=b, 10=c
+    output logic [7:0] a_count,
+    output logic [7:0] b_count,
+    output logic [7:0] c_count
+);
+
+    logic counting_enabled;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            a_count <= 0;
+            b_count <= 0;
+            c_count <= 0;
+            counting_enabled <= 1;
+        end else if (counting_enabled) begin
+            case (symbol)
+                2'b00: if (a_count < 8'hFF) a_count <= a_count + 1;
+                2'b01: if (b_count < 8'hFF) b_count <= b_count + 1;
+                2'b10: if (c_count < 8'hFF) c_count <= c_count + 1;
+                default: ; // ignore
+            endcase
+            
+            if (a_count == 8'hFF || b_count == 8'hFF || c_count == 8'hFF)
+                counting_enabled <= 0;
+        end
+    end
+
+endmodule
+
+//prob 5.4
+module SequenceGenerator (
+    input logic clk,
+    input logic reset,
+    input logic [7:0] x,
+    output logic [3:0] Y
+);
+
+    typedef enum logic [2:0] {
+        IDLE = 3'b000,
+        ACCUM = 3'b001,
+        SEQ_1 = 3'b010,
+        SEQ_2 = 3'b011,
+        SEQ_3 = 3'b100,
+        SEQ_4 = 3'b101
+    } state_t;
+
+    state_t state, next_state;
+    logic [15:0] accumulator;
+
+    // State register
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state <= IDLE;
+            accumulator <= 0;
+        end else begin
+            state <= next_state;
+            if (state == ACCUM && accumulator <= 1024)
+                accumulator <= accumulator + x;
+            else if (state == IDLE)
+                accumulator <= 0;
+        end
+    end
+
+    // Next state logic
+    always_comb begin
+        next_state = state;
+        case (state)
+            IDLE: next_state = ACCUM;
+
+            ACCUM: begin
+                if (accumulator > 1024)
+                    next_state = SEQ_1;
+            end
+
+            SEQ_1: next_state = SEQ_2;
+            SEQ_2: next_state = SEQ_3;
+            SEQ_3: next_state = SEQ_4;
+            SEQ_4: next_state = IDLE;
+        endcase
+    end
+
+    // Output logic
+    always_comb begin
+        case (state)
+            IDLE, ACCUM: Y = 4'b0000;
+            SEQ_1:       Y = 4'b0100;
+            SEQ_2:       Y = 4'b0110;
+            SEQ_3:       Y = 4'b1000;
+            SEQ_4:       Y = 4'b1001;
+            default:     Y = 4'b0000;
+        endcase
+    end
+
+endmodule
+
+//prob 5.9
+module SymbolACounter (
+    input logic clk,
+    input logic reset,
+    input logic [1:0] symbol,
+    output logic state_out,       // 0: counting, 1: idle
+    output logic [7:0] a_count    // Optional: number of a's counted
+);
+
+    logic [6:0] symbol_counter;  // To count up to 112
+
+    typedef enum logic {
+        COUNTING = 1'b0,
+        IDLE = 1'b1
+    } state_t;
+
+    state_t state;
+
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state <= COUNTING;
+            symbol_counter <= 0;
+            a_count <= 0;
+        end else begin
+            case (state)
+                COUNTING: begin
+                    if (symbol == 2'b00)  // symbol 'a'
+                        a_count <= a_count + 1;
+
+                    symbol_counter <= symbol_counter + 1;
+
+                    if (symbol_counter == 111)  // after 112 symbols
+                        state <= IDLE;
+                end
+
+                IDLE: begin
+                    // Stay idle until reset
+                end
+            endcase
+        end
+    end
+
+    assign state_out = state;
+
+endmodule
+
+//prob 4.2
+module OddEvenZeroDetector (
+    input logic clk,
+    input logic reset,
+    input logic in,         // Serial input (0 or 1)
+    output logic parity     // 0 = even, 1 = odd
+);
+
+    typedef enum logic [1:0] {
+        S0 = 2'b00,  // Even number of 0s
+        S1 = 2'b01,  // Odd number of 0s
+        S2 = 2'b10   // Terminal state
+    } state_t;
+
+    state_t state, next_state;
+
+    // State transition
+    always_ff @(posedge clk or posedge reset) begin
+        if (reset)
+            state <= S0;
+        else
+            state <= next_state;
+    end
+
+    always_comb begin
+        next_state = state;
+        case (state)
+            S0: next_state = (in == 1'b0) ? S1 : S0;
+            S1: next_state = (in == 1'b0) ? S0 : S2;
+            S2: next_state = S0;  // Reset after detection
+            default: next_state = S0;
+        endcase
+    end
+
+    // Output parity = 1 if odd number of 0s before first 1
+    always_comb begin
+        case (state)
+            S2: parity = 1'b1;  // Output only matters in S2
+            default: parity = 1'b0;
+        endcase
+    end
+
+endmodule
+
